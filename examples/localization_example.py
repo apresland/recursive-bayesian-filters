@@ -3,82 +3,83 @@ import cv2
 from numpy.random import uniform
 from scipy.stats import norm, gamma, uniform
 from localization import MonteCarloLocalization
+from visual import Window
 
-img_size =500
-x =np.array([-1,-1])
-x_prev =np.array([-1,-1])
+process_noise=(10,0.1) # position, yaw
+sensor_noise=10
 
-sensor_noise=50
-process_noise=50
+img_size =600
+window = Window(img_size)
 
-def measure_fn():
-    global x
+tl=[int(img_size/10),int(img_size/10)]
+tr=[int(9*img_size/10),int(img_size/10)]
+bl=[int(img_size/10),int(9*img_size/10)]
+br=[int(9*img_size/10),int(9*img_size/10)]
+
+landmarks = np.array([tl, tr, bl, br])
+
+
+def motion_fn(x, x_prev):
+    ''' Returns velocity and yawrate of the previous increment'''
+    velocity = np.linalg.norm(np.array([[x_prev[0], x_prev[1]]])- x ,axis=1)    
+    yawrate = np.arctan2(np.array([x[1]-x_prev[1]]), np.array([x_prev[0]-x[0] ]))
+    yawrate = -(yawrate-np.pi) if yawrate > 0 else -(np.pi+yawrate)            
+    return yawrate, velocity
+
+
+def measure_fn(x):
+    '''  Returns distances to known landmarks'''
     ranges = (np.linalg.norm(landmarks - np.array([[x[0],x[1]]]), axis=1) 
         + (np.random.randn(len(landmarks)) * sensor_noise))
     return ranges
 
 
-def motion_fn():
-    global x
-    global x_prev
-    distance = np.linalg.norm(np.array([[x_prev[0], x_prev[1]]])- x ,axis=1)    
-    rotation = np.arctan2(np.array([x[1]-x_prev[1]]), np.array([x_prev[0]-x[0] ]))
-    rotation = -(rotation-np.pi) if rotation > 0 else -(np.pi+rotation)            
-    return rotation, distance
-
-
 def uniform_prior_fn(N):
-    particles = np.empty((N, 2))
+    particles = np.empty((N, 3))
     particles[:, 0] = np.random.uniform(0, img_size, size=N)
     particles[:, 1] = np.random.uniform(0, img_size, size=N)
+    particles[:, 2] = np.random.uniform(0, 2 * np.pi, size=N)
+    particles[:, 2] %= 2 * np.pi
     return particles
 
-
-def mouseCallback(event, px, py, flags,null):
-    global x
-    x =np.array([px,py])
-
-
-window_name ="Monte Carlo Localization"
-cv2.namedWindow(window_name)
-cv2.setMouseCallback(window_name, mouseCallback)
-landmarks = np.array([[100,100], [400,100], [100,400], [400,400]])
 
 filter = MonteCarloLocalization(
     n_particles=200,
     prior_fn=uniform_prior_fn,
     landmarks=landmarks,
-    motion_fn=motion_fn,
-    measure_fn=measure_fn,
-    sensor_noise= sensor_noise,
-    process_noise=process_noise
+    process_noise= process_noise,
+    sensor_noise=sensor_noise
 )
 
 if __name__ == "__main__":
 
+    x_prev = x_prev =np.array([-1,-1])
+
     while (1):
 
-        if x_prev[0] > 0:
-            filter.update()
+        x = window.get_coords()
+
+        if filter.initialized:
+
+            ## predict next state from control
+            control = motion_fn(x, x_prev)
+            filter.predict(control)
+
+            ## sense position data
+            observations = measure_fn(x)
+            filter.update(observations)
+
+            ## resample weights 
+            filter.resample()
+
+            # visualize state estimate
+            window.show(filter)
+        else:
+            filter.init()
+
         x_prev = x
 
-        # create base image
-        img = np.zeros((img_size, img_size, 3), np.uint8)
-
-        # add landmarks
-        for landmark in filter.landmarks:
-            cv2.circle(img, tuple(landmark),10,(255,0,0),-1)
-        
-        # add particles:
-        for particle in filter.particles:
-            cv2.circle(img,tuple((int(particle[0]),int(particle[1]))),1,(255,255,255),-1)
-
-        # show image
-        cv2.imshow(window_name, img)
-
-        # check for escape
+        # escape
         result = cv2.waitKey(20)
         if result == 27:
             break
-
-    cv2.destroyAllWindows()
